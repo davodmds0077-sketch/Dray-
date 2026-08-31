@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "DaryaGold Scalping Analyzer v2",
+  "short_name": "DG Scalper v2",
+  "version": "2.0.0",
+  "description": "تحلیل‌گر اسکالپ ۱ دقیقه‌ای بر پایه‌ی ساختار بازار، تشخیص شکست جعلی، و بک‌تست رویدادمحور واقعی",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://daryagold.com/*",
+    "https://tv.daryagold.com/*",
+    "wss://tv.daryagold.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://daryagold.com/market/demo/mazaneh*",
+        "https://daryagold.com/market/mazaneh*"
+      ],
+      "js": [
+        "indicators.js",
+        "structure.js",
+        "timeframe.js",
+        "setup-engine.js",
+        "backtest.js",
+        "content.js"
+      ],
+      "css": ["style.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}

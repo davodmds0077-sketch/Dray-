@@ -1,0 +1,109 @@
+#dgs-panel {
+  position: fixed;
+  top: 80px;
+  right: 20px;
+  width: 350px;
+  max-height: 85vh;
+  overflow-y: auto;
+  background: #0f172a;
+  color: #e2e8f0;
+  border: 1px solid #334155;
+  border-radius: 14px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+  z-index: 999999;
+  font-family: 'Segoe UI', Tahoma, sans-serif;
+  direction: rtl;
+  font-size: 13px;
+}
+
+#dgs-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px; background: #1e293b; border-radius: 14px 14px 0 0;
+  cursor: grab; border-bottom: 1px solid #334155;
+}
+.dgs-title { font-weight: 700; color: #93c5fd; font-size: 12.5px; }
+#dgs-header button { background: none; border: none; color: #94a3b8; cursor: pointer; font-size: 16px; }
+
+#dgs-body { padding: 12px 14px; }
+
+/* --- مانیتور قیمت زنده --- */
+.dgs-monitor { margin-bottom: 10px; }
+.dgs-mon-price { font-size: 22px; font-weight: 700; direction: ltr; text-align: right; color: #f1f5f9; }
+.dgs-mon-meta { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; }
+.dgs-mon-ts { font-size: 10.5px; color: #94a3b8; }
+
+.dgs-badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
+.dgs-badge-live { background: #064e3b; color: #6ee7b7; }
+.dgs-badge-synced { background: #1e3a8a; color: #bfdbfe; }
+.dgs-badge-delayed { background: #78350f; color: #fde68a; }
+.dgs-badge-error { background: #7f1d1d; color: #fecaca; }
+
+/* --- Context --- */
+.dgs-context {
+  display: flex; gap: 12px; font-size: 11.5px; color: #cbd5e1;
+  margin-bottom: 10px; padding: 6px 8px; background: #1e293b; border-radius: 8px;
+}
+.dgs-ctx-item span { color: #94a3b8; }
+
+/* --- Setup --- */
+.dgs-wait { text-align: center; color: #94a3b8; padding: 14px 6px; font-size: 12.5px; }
+.dgs-wait-reason { font-size: 11px; margin-top: 6px; line-height: 1.6; }
+
+.dgs-patterns { margin-top: 10px; border-top: 1px dashed #334155; padding-top: 8px; }
+.dgs-patterns-title { font-size: 11.5px; color: #93c5fd; margin-bottom: 6px; font-weight: 600; }
+.dgs-patterns-empty { font-size: 11px; padding: 4px 0; }
+.dgs-pattern-row {
+  display: flex; justify-content: space-between; gap: 8px;
+  font-size: 11px; padding: 5px 8px; margin-bottom: 4px;
+  background: #1e293b; border-radius: 6px; color: #cbd5e1;
+}
+.dgs-pattern-row.dgs-pattern-passed { border: 1px solid #34d399; }
+.dgs-pattern-status { color: #94a3b8; text-align: left; direction: rtl; }
+.dgs-pattern-row.dgs-pattern-passed .dgs-pattern-status { color: #34d399; font-weight: 600; }
+
+.dgs-resolution { padding: 8px 10px; border-radius: 8px; margin-bottom: 8px; font-size: 12px; }
+.dgs-win { background: rgba(52,211,153,0.12); color: #6ee7b7; }
+.dgs-loss { background: rgba(248,113,113,0.12); color: #fca5a5; }
+
+.dgs-setup-card { border-radius: 10px; padding: 12px; border: 1px solid #334155; }
+.dgs-setup-long { background: rgba(52,211,153,0.08); border-color: #34d399; }
+.dgs-setup-short { background: rgba(248,113,113,0.08); border-color: #f87171; }
+.dgs-setup-dir { font-weight: 700; font-size: 14px; margin-bottom: 8px; }
+.dgs-setup-levels { font-size: 12.5px; line-height: 1.9; }
+.dgs-setup-reasons { font-size: 11px; color: #94a3b8; margin-top: 8px; }
+.dgs-setup-meta { font-size: 10.5px; color: #64748b; margin-top: 6px; }
+
+/* --- بخش جزئیات/بک‌تست --- */
+.dgs-details-btn {
+  width: 100%; padding: 7px; margin: 10px 0 8px; background: #1e293b;
+  border: 1px solid #334155; border-radius: 6px; color: #93c5fd; font-size: 11.5px; cursor: pointer;
+}
+.dgs-bt-controls { display: flex; gap: 6px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+.dgs-bt-controls label { font-size: 10.5px; color: #94a3b8; }
+.dgs-bt-controls input {
+  width: 90px; background: #1e293b; border: 1px solid #334155; color: #e2e8f0;
+  border-radius: 6px; padding: 4px 6px; font-size: 11px;
+}
+.dgs-bt-controls button {
+  background: #3b82f6; border: none; color: white; border-radius: 6px;
+  padding: 5px 10px; font-size: 11px; cursor: pointer;
+}
+
+.dgs-bt-block { margin-bottom: 10px; }
+.dgs-bt-title { font-size: 12px; font-weight: 600; margin-bottom: 4px; display: flex; align-items: center; gap: 6px; }
+.dgs-bt-subtitle { font-size: 11.5px; font-weight: 700; color: #93c5fd; margin: 6px 0; }
+.dgs-bt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 10px; font-size: 11.5px; }
+.dgs-bt-row { font-size: 11.5px; margin-bottom: 6px; }
+.dgs-hr { border-color: #334155; margin: 10px 0; }
+.dgs-muted { color: #94a3b8; font-size: 11.5px; }
+
+.dgs-conf { font-size: 10px; padding: 1px 6px; border-radius: 4px; }
+.dgs-conf-none { background: #7f1d1d; color: #fecaca; }
+.dgs-conf-low { background: #78350f; color: #fde68a; }
+.dgs-conf-medium { background: #1e3a8a; color: #bfdbfe; }
+.dgs-conf-high { background: #064e3b; color: #6ee7b7; }
+
+.dgs-disclaimer {
+  margin-top: 10px; padding-top: 8px; border-top: 1px dashed #334155;
+  font-size: 10.5px; color: #94a3b8; line-height: 1.6;
+}
