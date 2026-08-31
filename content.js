@@ -1,24 +1,23 @@
 // ================================================================
 //  content.js — DaryaGold Scalping Analyzer (1m primary)
 //
-//  اصول این نسخه:
-//  - تحلیل اصلی روی ۱ دقیقه؛ ۵ و ۱۵ دقیقه فقط Context/تأیید هستند.
-//  - Setup فقط با بسته‌شدن کندل ۱ دقیقه‌ای اسکن می‌شود، نه با هر Tick؛
-//    و تا SL/TP نخورد دست‌نخورده می‌ماند (بدون فلیکر، بدون سقف زمانی).
-//  - اگر داده Stale/ناهماهنگ باشد (DELAYED/ERROR)، Setup جدیدی صادر
-//    نمیشود.
-//  - اعتبار همیشه از بک‌تست واقعی (رویدادمحور، با Slippage) می‌آید،
-//    نه یک عدد ساختگی.
+//  بهبودها و رفع باگ‌ها در این نسخه:
+//  - منتظر بودن برای document.body و همچنین برای لود شدن ماژول‌های وابسته
+//    (DGTimeframe, DGSetupEngine, DGIndicators, DGBacktest) قبل از init
+//  - fallback ساده زمانی که WebSocket در دسترس نباشد: polling به endpoint
+//    تاریخی برای گرفتن آخرین قیمت تا UI حداقل مقداری نشان دهد
+//  - لاگ‌های بیشتر برای دیباگ و متدهای کمکی روی window برای تست دستی
+//  - محافظت در برابر دسترسی به resampler های نال و سایر شرایط ناپایدار
 // ================================================================
 
-console.log('⚡ DaryaGold Scalping Analyzer بارگذاری شد');
+console.log('⚡ DaryaGold Scalping Analyzer بارگذاری شد (improved)');
 
-const CFG = { ...window.DGSetupEngine.DEFAULT_CONFIG };
+const CFG = { ...((window.DGSetupEngine && window.DGSetupEngine.DEFAULT_CONFIG) || {}) };
 const MAX_1M_CANDLES = 4000; // ~۶۶ ساعت؛ کافی برای ساختار ۱ دقیقه‌ای، بدون فشار زیاد به مرورگر
 
 let raw1m = [];                 // کندل‌های ۱ دقیقه‌ای بسته‌شده (بدون کندل در حال شکل‌گیری)
 let currentMinuteCandle = null; // کندل ۱ دقیقه‌ای در حال شکل‌گیری از روی Tick های زنده
-let resampler5, resampler15;    // Resampler های Incremental برای Context (بدون Look-ahead)
+let resampler5 = null, resampler15 = null;    // Resampler های Incremental برای Context (بدون Look-ahead)
 
 let activeSetup = null;         // { direction, entry, sl, tp, rr, reasonTags, createdAtTime, entryIndexInRaw }
 let lastResolution = null;      // آخرین نتیجه‌ی بسته‌شده، برای نمایش موقت به کاربر
@@ -27,8 +26,12 @@ let wsSocket = null;
 let wsConnected = false;
 let wsReconnectDelay = 1000;
 const WS_MAX_RECONNECT = 30000;
+let wsAttempts = 0;
+const WS_MAX_ATTEMPTS = 4;
 let lastTickAt = null;          // Date.now() آخرین Tick دریافتی
 let dataSource = 'wss://tv.daryagold.com/ohlc/';
+
+let fallbackPolling = null; // interval id for HTTP polling fallback
 
 let cachedBacktest = null;      // آخرین گزارش بک‌تست (فقط با درخواست کاربر ساخته می‌شود)
 let backtestRunning = false;
@@ -37,12 +40,12 @@ let backtestRunning = false;
 
 async function fetchHistorical1m() {
   const now = Math.floor(Date.now() / 1000);
-  const from = now - 7 * 24 * 60 * 60; // تلاش برای ۷ رو��؛ اگر سرور کمتر داشته باشد اشکالی ندارد
+  const from = now - 7 * 24 * 60 * 60; // تلاش برای ۷ روز؛ اگر سرور کمتر داشته باشد اشکالی ندارد
   const url = `https://tv.daryagold.com/api/data/histoday/?e=DaryaGold&fsym=MAZANEH&tsym=TMN&toTs=${now}&fromTs=${from}&resolution=1`;
   try {
-    const res = await fetch(url);
+    const res = await fetch(url, {cache: 'no-store'});
     const data = await res.json();
-    if (data.Response === 'Success' && Array.isArray(data.Data)) {
+    if (data && (data.Response === 'Success' || data.Response === '200') && Array.isArray(data.Data)) {
       return data.Data
         .map(item => ({ time: item.time, open: item.open, high: item.high, low: item.low, close: item.close, volume: item.volume || 0 }))
         .sort((a, b) => a.time - b.time);
@@ -53,7 +56,32 @@ async function fetchHistorical1m() {
   return [];
 }
 
+async function fetchLatestPriceFromHist() {
+  try {
+    const hist = await fetchHistorical1m();
+    if (hist && hist.length) return hist[hist.length - 1].close;
+  } catch (e) { /* ignore */ }
+  return null;
+}
+
 // ============================ اتصال زنده ============================
+
+function startFallbackPolling() {
+  if (fallbackPolling) return;
+  console.info('[Scalper] starting fallback polling for latest price');
+  fallbackPolling = setInterval(async () => {
+    const p = await fetchLatestPriceFromHist();
+    if (p !== null) {
+      lastTickAt = Date.now();
+      updatePriceUI(p);
+      renderAll();
+    }
+  }, 5000);
+}
+
+function stopFallbackPolling() {
+  if (fallbackPolling) { clearInterval(fallbackPolling); fallbackPolling = null; }
+}
 
 function connectWebSocket() {
   if (wsSocket && (wsSocket.readyState === WebSocket.OPEN || wsSocket.readyState === WebSocket.CONNECTING)) return;
@@ -62,36 +90,52 @@ function connectWebSocket() {
   } catch (e) {
     console.warn('[Scalper] WebSocket ایجاد نشد:', e);
     wsConnected = false;
+    wsAttempts++;
+    if (wsAttempts >= WS_MAX_ATTEMPTS) startFallbackPolling();
     return;
   }
 
   wsSocket.addEventListener('open', () => {
     wsConnected = true;
+    wsAttempts = 0;
+    stopFallbackPolling();
     wsReconnectDelay = 1000;
     try { wsSocket.send(JSON.stringify({ action: 'SubAdd', subs: ['0~DaryaGold~MAZANEH~TMN'] })); } catch (e) { /* ignore */ }
     renderAll();
+    console.info('[Scalper] websocket connected');
   });
 
   wsSocket.addEventListener('message', (event) => {
     try {
       const data = JSON.parse(event.data);
-      if (data.TYPE === '0' && data.FSYM === 'MAZANEH' && data.TSYM === 'TMN') {
-        const price = parseFloat(data.P);
-        if (!isNaN(price)) onTick(price);
+      // defensive checks: older servers might use lowercase keys
+      const TYPE = data.TYPE || data.type;
+      const FSYM = data.FSYM || data.fsym;
+      const TSYM = data.TSYM || data.tsym;
+      const P = data.P || data.p || data.price;
+      if (TYPE === '0' && (FSYM === 'MAZANEH' || FSYM === 'Mazaneh') && (TSYM === 'TMN' || TSYM === 'Tmn')) {
+        const price = parseFloat(P);
+        if (!isNaN(price)) {
+          wsConnected = true;
+          onTick(price);
+        }
       }
     } catch (e) { /* نادیده گرفته می‌شود */ }
   });
 
   wsSocket.addEventListener('close', () => {
     wsConnected = false;
+    console.warn('[Scalper] websocket closed');
     renderAll();
+    wsAttempts++;
+    if (wsAttempts >= WS_MAX_ATTEMPTS) startFallbackPolling();
     setTimeout(() => {
       connectWebSocket();
       wsReconnectDelay = Math.min(wsReconnectDelay * 2, WS_MAX_RECONNECT);
     }, wsReconnectDelay);
   });
 
-  wsSocket.addEventListener('error', () => { if (wsSocket) wsSocket.close(); });
+  wsSocket.addEventListener('error', (ev) => { console.warn('[Scalper] websocket error', ev); if (wsSocket) wsSocket.close(); });
 }
 
 function onTick(price) {
@@ -116,10 +160,11 @@ function onTick(price) {
 }
 
 function closeCurrentCandle() {
+  if (!currentMinuteCandle) return;
   raw1m.push(currentMinuteCandle);
   if (raw1m.length > MAX_1M_CANDLES) raw1m.shift();
-  if (resampler5) resampler5.push(currentMinuteCandle);
-  if (resampler15) resampler15.push(currentMinuteCandle);
+  try { if (resampler5) resampler5.push(currentMinuteCandle); } catch (e) { /* ignore */ }
+  try { if (resampler15) resampler15.push(currentMinuteCandle); } catch (e) { /* ignore */ }
 
   // اسکن برای Setup جدید فقط روی کندل تازه‌بسته‌شده، و فقط اگر Setup فعالی نداریم و داده تازه است
   const status = getDataStatus();
@@ -134,8 +179,12 @@ function tryScanForSetup() {
   const idx = raw1m.length - 1;
   const htf5 = resampler5 ? resampler5.getAll() : [];
   const htf15 = resampler15 ? resampler15.getAll() : [];
+
+  // guard: ensure engine exists
+  if (!window.DGSetupEngine || !window.DGIndicators) return;
+
   const result = window.DGSetupEngine.scanForSetup(raw1m, idx, htf5, htf15, CFG);
-  lastDetectedPatterns = result.patterns;
+  lastDetectedPatterns = result.patterns || [];
   if (!result.armed) return;
 
   // بررسی سریع اندیکاتوری روی کندل ورودی قبل از armed شدن
@@ -158,11 +207,11 @@ function tryScanForSetup() {
     if (pattern === 'bearish_engulfing' || pattern === 'shooting_star') confirms++;
   }
 
-  if (confirms >= CFG.confirmationNeeded) {
+  if (confirms >= (CFG.confirmationNeeded || 1)) {
     activeSetup = { ...result.armed, entryIndexInRaw: entryIdx };
     lastResolution = null;
   } else {
-    // رد کردن به عنوان مسلح‌شده؛ الگو به عنوان "شناسایی‌شده ولی ردشده" در lastDetectedPatterns باقی می‌ماند
+    // rejected armed candidate — keep it in patterns for UI
   }
 }
 
@@ -178,7 +227,7 @@ function checkActiveSetupAgainstPrice(price) {
 // ============================ وضعیت داده‌ی زنده ============================
 
 function getDataStatus() {
-  if (!wsConnected) return { label: '🔴 قطع است — داده به‌روز نیست', level: 'error' };
+  if (!wsConnected && !fallbackPolling) return { label: '🔴 قطع است — داده به‌روز نیست', level: 'error' };
   if (lastTickAt === null) return { label: '🟡 در انتظار اولین داده...', level: 'delayed' };
   const delta = Date.now() - lastTickAt;
   if (delta <= 3000) return { label: '🟢 داده به‌روز است', level: 'live' };
@@ -197,6 +246,10 @@ function fmtR(n) { return (n === null || n === undefined) ? '—' : `${n >= 0 ? 
 let _panelRoot = null;
 function createPanel() {
   if (document.getElementById('dgs-panel')) return;
+  if (!document.body) {
+    console.warn('[Scalper] createPanel: document.body not available');
+    return;
+  }
   const panel = document.createElement('div');
   panel.id = 'dgs-panel';
   panel.innerHTML = `
@@ -227,15 +280,17 @@ function createPanel() {
   document.body.appendChild(panel);
   _panelRoot = panel;
 
-  panel.querySelector('#dgs-close').addEventListener('click', () => { panel.remove(); _panelRoot = null; });
-  panel.querySelector('#dgs-run-backtest').addEventListener('click', () => { runBacktestNow(); });
+  const closeBtn = panel.querySelector('#dgs-close');
+  if (closeBtn) closeBtn.addEventListener('click', () => { panel.remove(); _panelRoot = null; });
+  const runBt = panel.querySelector('#dgs-run-backtest');
+  if (runBt) runBt.addEventListener('click', () => { runBacktestNow(); });
 }
 
 function updatePriceUI(price) {
   try {
     if (!_panelRoot) return;
     const priceEl = document.getElementById('dgs-price');
-    if (priceEl) priceEl.textContent = price !== undefined ? price.toLocaleString() : '—';
+    if (priceEl) priceEl.textContent = (price !== undefined && price !== null) ? Number(price).toLocaleString() : '—';
     const statusEl = document.getElementById('dgs-status');
     const badgeEl = document.getElementById('dgs-badge');
     const status = getDataStatus();
@@ -247,15 +302,15 @@ function updatePriceUI(price) {
       else if (status.level === 'delayed') badgeEl.classList.add('dgs-badge-delayed');
       else badgeEl.classList.add('dgs-badge-error');
     }
-  } catch (e) { /* silent */ }
+  } catch (e) { console.warn('[Scalper] updatePriceUI error', e); }
 }
 
 function renderLiveMonitor() {
-  updatePriceUI(currentMinuteCandle ? currentMinuteCandle.close : (raw1m.at(-1)?.close || '—'));
+  const last = currentMinuteCandle ? currentMinuteCandle.close : (raw1m.length ? raw1m[raw1m.length - 1].close : '—');
+  updatePriceUI(last);
 }
 
 function renderContext() {
-  // reserved for HTF context — show counts
   if (!_panelRoot) return;
   const area = document.getElementById('dgs-setup-area');
   if (!area) return;
@@ -280,7 +335,7 @@ function renderSetup() {
     const cls = lastResolution.outcome === 'TARGET_HIT' ? 'dgs-win' : 'dgs-loss';
     container.innerHTML = `<div class="dgs-resolution ${cls}">Latest: ${lastResolution.outcome} @ ${fmtNum(lastResolution.exitPrice)}</div>`;
   } else {
-    container.innerHTML = '';
+    // keep context rendering above; don't clear context
   }
 }
 
@@ -315,11 +370,13 @@ function renderBacktestPanel() {
 }
 
 function renderAll() {
-  renderLiveMonitor();
-  renderContext();
-  renderSetup();
-  renderPatterns();
-  renderBacktestPanel();
+  try {
+    renderLiveMonitor();
+    renderContext();
+    renderSetup();
+    renderPatterns();
+    renderBacktestPanel();
+  } catch (e) { console.warn('[Scalper] renderAll error', e); }
 }
 
 // باقیٔ فایل بدون تغییر — UI و backtest trigger همان قبلی است
@@ -335,6 +392,7 @@ async function runBacktestNow() {
     const slippageInput = document.getElementById('dgs-slippage-input');
     const customSlippage = slippageInput && slippageInput.value ? parseFloat(slippageInput.value) : undefined;
     const opts = customSlippage !== undefined && !isNaN(customSlippage) ? { slippageAbs: customSlippage } : {};
+    if (!window.DGBacktest) throw new Error('DGBacktest not available');
     cachedBacktest = window.DGBacktest.fullReport(raw1m, CFG, opts);
   } catch (e) {
     console.error('[Scalper] خطا در بک‌تست:', e);
@@ -344,30 +402,75 @@ async function runBacktestNow() {
   renderBacktestPanel();
 }
 
-// ----------------- Initialization -----------------
+// ----------------- Initialization (robust) -----------------
 (async function initScalper() {
   try {
+    console.debug('[Scalper] initScalper starting — waiting for document.body and modules');
+
+    // wait for document.body to exist (fallback با poll تا 5 ثانیه)
+    const waitFor = async (condFn, timeoutMs = 5000, name = 'condition') => new Promise((resolve) => {
+      if (condFn()) return resolve(true);
+      const start = Date.now();
+      const iv = setInterval(() => {
+        if (condFn()) { clearInterval(iv); return resolve(true); }
+        if (Date.now() - start > timeoutMs) { clearInterval(iv); return resolve(false); }
+      }, 100);
+    });
+
+    await waitFor(() => !!document.body, 5000, 'document.body');
+
+    // ensure dependent modules are loaded (timeframe, indicators, setup-engine, backtest)
+    const depsReady = await waitFor(() => {
+      return !!(window.DGTimeframe && window.DGIndicators && window.DGSetupEngine && window.DGBacktest);
+    }, 5000, 'modules');
+
+    if (!depsReady) {
+      console.warn('[Scalper] some modules are missing at init — trying to continue (DGTimeframe, DGIndicators, DGSetupEngine, DGBacktest expected)');
+    }
+
     createPanel();
 
     // create resamplers
-    resampler5 = window.DGTimeframe.createResampler(5);
-    resampler15 = window.DGTimeframe.createResampler(15);
+    try { if (window.DGTimeframe && window.DGTimeframe.createResampler) { resampler5 = window.DGTimeframe.createResampler(5); resampler15 = window.DGTimeframe.createResampler(15); } }
+    catch (e) { console.warn('[Scalper] resampler creation problem:', e); }
 
-    // try to fetch historical candles and seed internal state
-    const hist = await fetchHistorical1m();
-    if (hist && hist.length) {
-      raw1m = hist.slice(-MAX_1M_CANDLES);
-      for (const c of raw1m) {
-        resampler5.push(c);
-        resampler15.push(c);
+    // try to fetch historical candles and seed internal state (non-blocking)
+    try {
+      const hist = await fetchHistorical1m();
+      if (hist && hist.length) {
+        raw1m = hist.slice(-MAX_1M_CANDLES);
+        if (resampler5 && resampler15) {
+          for (const c of raw1m) { try { resampler5.push(c); resampler15.push(c); } catch (e) { /* ignore per-bar errors */ } }
+        }
       }
+    } catch (e) {
+      console.warn('[Scalper] fetchHistorical1m failed (continuing):', e);
     }
 
     renderAll();
-    connectWebSocket();
+
+    // connect websocket in a try/catch so failures don't stop UI
+    try {
+      connectWebSocket();
+    } catch (e) {
+      console.warn('[Scalper] connectWebSocket threw:', e);
+      startFallbackPolling();
+    }
 
     // periodic UI update in case no ticks arrive
-    setInterval(() => { renderAll(); }, 2000);
+    setInterval(() => { try { renderAll(); } catch (e) { /* ignore */ } }, 2000);
+
+    // expose small debug helpers so you can call from console
+    window.DGScalperDebug = {
+      createPanel: () => { try { createPanel(); renderAll(); return true; } catch (e) { console.error(e); return false; } },
+      connectWS: () => { try { connectWebSocket(); return true; } catch (e) { console.error(e); return false; } },
+      startPoll: () => { startFallbackPolling(); return true; },
+      stopPoll: () => { stopFallbackPolling(); return true; },
+      raw1mCount: () => raw1m.length,
+      resamplerStatus: () => ({ r5: !!resampler5, r15: !!resampler15 })
+    };
+
+    console.info('[Scalper] init complete — use DGScalperDebug in console for manual actions');
   } catch (e) {
     console.error('[Scalper] خطا در init:', e);
   }
