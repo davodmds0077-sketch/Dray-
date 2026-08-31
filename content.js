@@ -6,7 +6,7 @@
 //  - Setup فقط با بسته‌شدن کندل ۱ دقیقه‌ای اسکن می‌شود، نه با هر Tick؛
 //    و تا SL/TP نخورد دست‌نخورده می‌ماند (بدون فلیکر، بدون سقف زمانی).
 //  - اگر داده Stale/ناهماهنگ باشد (DELAYED/ERROR)، Setup جدیدی صادر
-//    نمی‌شود.
+//    نمیشود.
 //  - اعتبار همیشه از بک‌تست واقعی (رویدادمحور، با Slippage) می‌آید،
 //    نه یک عدد ساختگی.
 // ================================================================
@@ -37,7 +37,7 @@ let backtestRunning = false;
 
 async function fetchHistorical1m() {
   const now = Math.floor(Date.now() / 1000);
-  const from = now - 7 * 24 * 60 * 60; // تلاش برای ۷ روز؛ اگر سرور کمتر داشته باشد اشکالی ندارد
+  const from = now - 7 * 24 * 60 * 60; // تلاش برای ۷ رو��؛ اگر سرور کمتر داشته باشد اشکالی ندارد
   const url = `https://tv.daryagold.com/api/data/histoday/?e=DaryaGold&fsym=MAZANEH&tsym=TMN&toTs=${now}&fromTs=${from}&resolution=1`;
   try {
     const res = await fetch(url);
@@ -57,12 +57,19 @@ async function fetchHistorical1m() {
 
 function connectWebSocket() {
   if (wsSocket && (wsSocket.readyState === WebSocket.OPEN || wsSocket.readyState === WebSocket.CONNECTING)) return;
-  wsSocket = new WebSocket(dataSource);
+  try {
+    wsSocket = new WebSocket(dataSource);
+  } catch (e) {
+    console.warn('[Scalper] WebSocket ایجاد نشد:', e);
+    wsConnected = false;
+    return;
+  }
 
   wsSocket.addEventListener('open', () => {
     wsConnected = true;
     wsReconnectDelay = 1000;
-    wsSocket.send(JSON.stringify({ action: 'SubAdd', subs: ['0~DaryaGold~MAZANEH~TMN'] }));
+    try { wsSocket.send(JSON.stringify({ action: 'SubAdd', subs: ['0~DaryaGold~MAZANEH~TMN'] })); } catch (e) { /* ignore */ }
+    renderAll();
   });
 
   wsSocket.addEventListener('message', (event) => {
@@ -77,6 +84,7 @@ function connectWebSocket() {
 
   wsSocket.addEventListener('close', () => {
     wsConnected = false;
+    renderAll();
     setTimeout(() => {
       connectWebSocket();
       wsReconnectDelay = Math.min(wsReconnectDelay * 2, WS_MAX_RECONNECT);
@@ -110,8 +118,8 @@ function onTick(price) {
 function closeCurrentCandle() {
   raw1m.push(currentMinuteCandle);
   if (raw1m.length > MAX_1M_CANDLES) raw1m.shift();
-  resampler5.push(currentMinuteCandle);
-  resampler15.push(currentMinuteCandle);
+  if (resampler5) resampler5.push(currentMinuteCandle);
+  if (resampler15) resampler15.push(currentMinuteCandle);
 
   // اسکن برای Setup جدید فقط روی کندل تازه‌بسته‌شده، و فقط اگر Setup فعالی نداریم و داده تازه است
   const status = getDataStatus();
@@ -124,8 +132,8 @@ let lastDetectedPatterns = []; // آخرین لیست الگوهای شناسا�
 
 function tryScanForSetup() {
   const idx = raw1m.length - 1;
-  const htf5 = resampler5.getAll();
-  const htf15 = resampler15.getAll();
+  const htf5 = resampler5 ? resampler5.getAll() : [];
+  const htf15 = resampler15 ? resampler15.getAll() : [];
   const result = window.DGSetupEngine.scanForSetup(raw1m, idx, htf5, htf15, CFG);
   lastDetectedPatterns = result.patterns;
   if (!result.armed) return;
@@ -185,11 +193,133 @@ function fmtNum(n) { return (n === null || n === undefined || isNaN(n)) ? '—' 
 function fmtPct(n, digits = 1) { return (n === null || n === undefined) ? '—' : `${n.toFixed(digits)}٪`; }
 function fmtR(n) { return (n === null || n === undefined) ? '—' : `${n >= 0 ? '+' : ''}${n.toFixed(2)}R`; }
 
+// Minimal UI — create a simple panel so users can see status and basic info.
+let _panelRoot = null;
+function createPanel() {
+  if (document.getElementById('dgs-panel')) return;
+  const panel = document.createElement('div');
+  panel.id = 'dgs-panel';
+  panel.innerHTML = `
+    <div id="dgs-header">
+      <div class="dgs-title">DaryaGold Scalping Analyzer</div>
+      <button id="dgs-close">✕</button>
+    </div>
+    <div id="dgs-body">
+      <div class="dgs-monitor">
+        <div class="dgs-mon-price" id="dgs-price">—</div>
+        <div class="dgs-mon-meta">
+          <div class="dgs-mon-ts" id="dgs-status">در حال آماده‌سازی...</div>
+          <div id="dgs-badge" class="dgs-badge dgs-badge-error">—</div>
+        </div>
+      </div>
+      <div id="dgs-setup-area"></div>
+      <div class="dgs-patterns" id="dgs-patterns"></div>
+      <div style="margin-top:8px">
+        <div class="dgs-bt-controls">
+          <label>Slippage:</label>
+          <input id="dgs-slippage-input" placeholder="مثلا 10" />
+          <button id="dgs-run-backtest">Run Backtest</button>
+        </div>
+      </div>
+      <div id="dgs-backtest-result" style="margin-top:8px;font-size:12px;color:#cbd5e1"></div>
+    </div>
+  `;
+  document.body.appendChild(panel);
+  _panelRoot = panel;
+
+  panel.querySelector('#dgs-close').addEventListener('click', () => { panel.remove(); _panelRoot = null; });
+  panel.querySelector('#dgs-run-backtest').addEventListener('click', () => { runBacktestNow(); });
+}
+
+function updatePriceUI(price) {
+  try {
+    if (!_panelRoot) return;
+    const priceEl = document.getElementById('dgs-price');
+    if (priceEl) priceEl.textContent = price !== undefined ? price.toLocaleString() : '—';
+    const statusEl = document.getElementById('dgs-status');
+    const badgeEl = document.getElementById('dgs-badge');
+    const status = getDataStatus();
+    if (statusEl) statusEl.textContent = status.label;
+    if (badgeEl) {
+      badgeEl.className = 'dgs-badge';
+      if (status.level === 'live') badgeEl.classList.add('dgs-badge-live');
+      else if (status.level === 'synced') badgeEl.classList.add('dgs-badge-synced');
+      else if (status.level === 'delayed') badgeEl.classList.add('dgs-badge-delayed');
+      else badgeEl.classList.add('dgs-badge-error');
+    }
+  } catch (e) { /* silent */ }
+}
+
+function renderLiveMonitor() {
+  updatePriceUI(currentMinuteCandle ? currentMinuteCandle.close : (raw1m.at(-1)?.close || '—'));
+}
+
+function renderContext() {
+  // reserved for HTF context — show counts
+  if (!_panelRoot) return;
+  const area = document.getElementById('dgs-setup-area');
+  if (!area) return;
+  const htf5Count = resampler5 ? resampler5.getAll().length : 0;
+  const htf15Count = resampler15 ? resampler15.getAll().length : 0;
+  area.innerHTML = `<div style="font-size:12px;color:#94a3b8">HTF5: ${htf5Count} bars · HTF15: ${htf15Count} bars · 1m: ${raw1m.length} bars</div>`;
+}
+
+function renderSetup() {
+  if (!_panelRoot) return;
+  const container = document.getElementById('dgs-setup-area');
+  if (!container) return;
+  if (activeSetup) {
+    container.innerHTML = `
+      <div class="dgs-setup-card ${activeSetup.direction === 'long' ? 'dgs-setup-long' : 'dgs-setup-short'}">
+        <div class="dgs-setup-dir">${activeSetup.direction === 'long' ? 'LONG' : 'SHORT'}</div>
+        <div class="dgs-setup-levels">Entry: ${fmtNum(activeSetup.entry)} · SL: ${fmtNum(activeSetup.sl)} · TP: ${fmtNum(activeSetup.tp)} · RR: ${activeSetup.rr ? activeSetup.rr.toFixed(2) : '—'}</div>
+        <div class="dgs-setup-reasons">${(activeSetup.reasonTags || []).join(' · ')}</div>
+      </div>
+    `;
+  } else if (lastResolution) {
+    const cls = lastResolution.outcome === 'TARGET_HIT' ? 'dgs-win' : 'dgs-loss';
+    container.innerHTML = `<div class="dgs-resolution ${cls}">Latest: ${lastResolution.outcome} @ ${fmtNum(lastResolution.exitPrice)}</div>`;
+  } else {
+    container.innerHTML = '';
+  }
+}
+
+function renderPatterns() {
+  if (!_panelRoot) return;
+  const box = document.getElementById('dgs-patterns');
+  if (!box) return;
+  if (!lastDetectedPatterns || lastDetectedPatterns.length === 0) {
+    box.innerHTML = `<div class="dgs-patterns-title">الگوها</div><div class="dgs-patterns-empty">— هیچ الگویی شناسایی نشده</div>`;
+    return;
+  }
+  const rows = lastDetectedPatterns.slice(0, 10).map(p => {
+    const passed = p.passed ? 'dgs-pattern-passed' : '';
+    const title = `${p.direction.toUpperCase()} @ ${fmtNum(p.level)}`;
+    const status = p.passed ? 'PASSED' : (p.failReason || 'REJECTED');
+    return `<div class="dgs-pattern-row ${passed}"><div>${title}</div><div class="dgs-pattern-status">${status}</div></div>`;
+  });
+  box.innerHTML = `<div class="dgs-patterns-title">الگوها</div>${rows.join('')}`;
+}
+
+function renderBacktestPanel() {
+  if (!_panelRoot) return;
+  const el = document.getElementById('dgs-backtest-result');
+  if (!el) return;
+  if (backtestRunning) { el.textContent = 'بکتست در حال اجرا...'; return; }
+  if (!cachedBacktest) { el.textContent = 'نتیجه‌ای موجود نیست.'; return; }
+  const o = cachedBacktest.overall || {};
+  el.innerHTML = `
+    <div>Trades: ${o.count || 0} · WinRate: ${o.winRate ? o.winRate.toFixed(1) + '%' : '—'}</div>
+    <div>Expectancy: ${o.expectancy ? o.expectancy.toFixed(2) + 'R' : '—'} · MaxDD: ${o.maxDrawdownR !== null ? o.maxDrawdownR.toFixed(2) + 'R' : '—'}</div>
+  `;
+}
+
 function renderAll() {
   renderLiveMonitor();
   renderContext();
   renderSetup();
   renderPatterns();
+  renderBacktestPanel();
 }
 
 // باقیٔ فایل بدون تغییر — UI و backtest trigger همان قبلی است
@@ -213,3 +343,32 @@ async function runBacktestNow() {
   backtestRunning = false;
   renderBacktestPanel();
 }
+
+// ----------------- Initialization -----------------
+(async function initScalper() {
+  try {
+    createPanel();
+
+    // create resamplers
+    resampler5 = window.DGTimeframe.createResampler(5);
+    resampler15 = window.DGTimeframe.createResampler(15);
+
+    // try to fetch historical candles and seed internal state
+    const hist = await fetchHistorical1m();
+    if (hist && hist.length) {
+      raw1m = hist.slice(-MAX_1M_CANDLES);
+      for (const c of raw1m) {
+        resampler5.push(c);
+        resampler15.push(c);
+      }
+    }
+
+    renderAll();
+    connectWebSocket();
+
+    // periodic UI update in case no ticks arrive
+    setInterval(() => { renderAll(); }, 2000);
+  } catch (e) {
+    console.error('[Scalper] خطا در init:', e);
+  }
+})();
